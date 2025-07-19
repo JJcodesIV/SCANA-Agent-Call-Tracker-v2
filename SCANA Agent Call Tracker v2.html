@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>SCANA Agent Call Tracker v2</title>
+  <!-- Chart.js library -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --primary: #0069d9;
+      --light: #f8f9fa;
+      --dark: #343a40;
+    }
+    body {
+      font-family: Arial, Helvetica, sans-serif;
+      background: #fafafa;
+      margin: 0;
+      padding: 0 1rem;
+    }
+    h1, h2 {
+      color: var(--dark);
+      margin-top: 1rem;
+    }
+    section {
+      background: #fff;
+      padding: 1rem;
+      margin: 1rem auto;
+      max-width: 1000px;
+      border-radius: 6px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    label {
+      display: block;
+      margin-top: 0.5rem;
+      font-weight: 600;
+    }
+    input, select, button, textarea {
+      padding: 0.35rem 0.55rem;
+      margin-top: 0.25rem;
+      font-size: 1rem;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+    }
+    button {
+      cursor: pointer;
+      background: var(--primary);
+      color: #fff;
+      border: none;
+    }
+    button:hover {
+      background: #0056b3;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 0.5rem;
+    }
+    th, td {
+      border: 1px solid #ddd;
+      padding: 0.4rem;
+      text-align: left;
+      font-size: 0.9rem;
+    }
+    th {
+      background: var(--light);
+    }
+    .center { text-align: center; }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+      margin-top: 0.5rem;
+    }
+    .stat {
+      background: var(--light);
+      border-radius: 4px;
+      padding: 0.75rem;
+    }
+    .stat h3 {
+      margin: 0.25rem 0 0.35rem;
+      font-size: 1.1rem;
+      color: var(--primary);
+    }
+    .stat p {
+      margin: 0;
+      font-size: 1.2rem;
+      font-weight: bold;
+      color: var(--dark);
+    }
+    canvas { max-width: 100%; }
+    /* Responsive: hide note column on small screens */
+    @media(max-width:600px) {
+      td:nth-child(5) { display: none; }
+    }
+    /* Extra spacing row for import/export buttons */
+    .io-buttons {
+      margin-top: 1rem;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+    .io-buttons button {
+      flex: 1;
+      min-width: 120px;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>📞 SCANA Agent Call Tracker v2</h1>
+
+  <!-- ============ ADD / LOG A CALL ============ -->
+  <section>
+    <h2>Add / Log a Call</h2>
+    <form id="callForm">
+      <!-- Instead of a free text input, we use a dropdown populated from agent profiles -->
+      <label>Agent
+        <select id="agentSelect" required></select>
+      </label>
+      <!-- If "Other" is selected, show a text input for a custom agent name -->
+      <div id="customAgentWrapper" style="display: none;">
+        <label>Custom Agent Name
+          <input type="text" id="customAgent" placeholder="Enter agent name">
+        </label>
+      </div>
+      <label>Date &amp; Time
+        <input type="datetime-local" id="callDate" required>
+      </label>
+      <label>Duration (minutes)
+        <input type="number" id="duration" min="0" step="1" placeholder="Length of call">
+      </label>
+      <label>Outcome / Note (optional)
+        <textarea id="note" rows="2" placeholder="Disposition, summary, etc."></textarea>
+      </label><br>
+      <button type="submit">➕ Add Call</button>
+    </form>
+  </section>
+
+  <!-- ============ FILTER & ANALYTICS ============ -->
+  <section>
+    <h2>Filter & Analytics</h2>
+    <div style="display:flex; gap:1rem; flex-wrap:wrap; align-items:flex-end">
+      <label>Start Date
+        <input type="date" id="startDate">
+      </label>
+      <label>End Date
+        <input type="date" id="endDate">
+      </label>
+      <!-- Agent filter: "All Agents", "Custom Agents" and each agent profile -->
+      <label>Agent Filter
+        <select id="agentFilter"></select>
+      </label>
+      <button id="applyFilter">🔍 Apply Filter</button>
+      <button id="resetFilter" style="background:#6c757d">Clear Filter</button>
+    </div>
+
+    <div class="stats-grid" id="statsPane">
+      <!-- stats injected by JS -->
+    </div>
+
+    <canvas id="volumeChart" height="120"></canvas>
+
+    <!-- Import / Export buttons -->
+    <div class="io-buttons">
+      <button id="exportData" style="background:#17a2b8">⤵️ Export CSV</button>
+      <button id="downloadTemplate" style="background:#ffc107">📄 Download CSV Template</button>
+      <button id="importCSV" style="background:#28a745">📥 Import CSV</button>
+      <button id="exportJSON" style="background:#6f42c1">Export JSON Backup</button>
+      <button id="importJSON" style="background:#e83e8c">Import JSON Backup</button>
+    </div>
+    <!-- Hidden file inputs for CSV and JSON import -->
+    <input type="file" id="csvFileInput" accept=".csv" style="display:none">
+    <input type="file" id="jsonFileInput" accept=".json" style="display:none">
+  </section>
+
+  <!-- ============ CALL LOG ============ -->
+  <section>
+    <h2>Call Log (<span id="rowCount">0</span>)</h2>
+    <div style="overflow-x:auto">
+      <table id="callTable">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Agent</th>
+            <th>Date/Time</th>
+            <th>Duration (min)</th>
+            <th>Note</th>
+            <th class="center">🗑️</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ AGENT PROFILES ============ -->
+  <section id="agentProfilesSection">
+    <h2>Agent Profiles</h2>
+    <form id="agentProfileForm">
+      <label>Name
+        <input type="text" id="profileName" required placeholder="Agent Name">
+      </label>
+      <label>Email
+        <input type="email" id="profileEmail" placeholder="Email (optional)">
+      </label>
+      <button type="submit">➕ Add Profile</button>
+    </form>
+    <table id="profileTable">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Name</th>
+          <th>Email</th>
+          <th class="center">🗑️</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <script>
+    /* ===================== PERSISTENCE KEYS ===================== */
+    const CALL_STORAGE_KEY = 'callLogs_v1';
+    const PROFILE_STORAGE_KEY = 'agentProfiles_v1';
+
+    /* ===================== CALL LOG FUNCTIONS ===================== */
+    function loadData() {
+      return JSON.parse(localStorage.getItem(CALL_STORAGE_KEY) || '[]');
+    }
+    function saveData(arr) {
+      localStorage.setItem(CALL_STORAGE_KEY, JSON.stringify(arr));
+    }
+
+    /* ===================== AGENT PROFILE FUNCTIONS ===================== */
+    function loadProfiles() {
+      return JSON.parse(localStorage.getItem(PROFILE_STORAGE_KEY) || '[]');
+    }
+    function saveProfiles(arr) {
+      localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(arr));
+    }
+
+    /* ===================== AGENT PROFILE CRUD ===================== */
+    document.getElementById('agentProfileForm').addEventListener('submit', e => {
+      e.preventDefault();
+      const profiles = loadProfiles();
+      const newProfile = {
+        id: Date.now().toString(),
+        name: document.getElementById('profileName').value.trim(),
+        email: document.getElementById('profileEmail').value.trim()
+      };
+      profiles.push(newProfile);
+      saveProfiles(profiles);
+      e.target.reset();
+      renderAgentProfiles();
+      renderAgentSelects();
+    });
+
+    function renderAgentProfiles() {
+      const profiles = loadProfiles();
+      const tbody = document.querySelector('#profileTable tbody');
+      tbody.innerHTML = '';
+      profiles.forEach((p, i) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${i + 1}</td>
+          <td>${p.name}</td>
+          <td>${p.email}</td>
+          <td class="center"><button onclick="deleteProfile('${p.id}')" style="background:#dc3545">X</button></td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    function deleteProfile(id) {
+      if (!confirm('Delete this profile?')) return;
+      let profiles = loadProfiles();
+      profiles = profiles.filter(p => p.id !== id);
+      saveProfiles(profiles);
+      renderAgentProfiles();
+      renderAgentSelects();
+    }
+
+    /* ===================== CALL FORM (Add Call) ===================== */
+    // Populate agent dropdown and listen for "Other" selection
+    function renderAgentSelects() {
+      const profiles = loadProfiles();
+      const select = document.getElementById('agentSelect');
+      const filterSelect = document.getElementById('agentFilter');
+
+      // For call form agent select: always start with a default instructive option.
+      select.innerHTML = `<option value="" disabled selected>Select Agent</option>`;
+      // For filtering: add "All Agents" and "Custom Agents" options.
+      filterSelect.innerHTML = `<option value="all">All Agents</option>
+                                <option value="custom">Custom Agents</option>`;
+      profiles.forEach(p => {
+        const option = document.createElement('option');
+        option.value = p.id;
+        option.textContent = p.name;
+        select.appendChild(option);
+
+        const fOption = document.createElement('option');
+        fOption.value = p.id;
+        fOption.textContent = p.name;
+        filterSelect.appendChild(fOption);
+      });
+      // Add an "Other" option to allow a custom agent name
+      const otherOption = document.createElement('option');
+      otherOption.value = "other";
+      otherOption.textContent = "Other";
+      select.appendChild(otherOption);
+    }
+
+    // Show/hide custom-agent input if "Other" is selected.
+    document.getElementById('agentSelect').addEventListener('change', function() {
+      if (this.value === "other") {
+        document.getElementById('customAgentWrapper').style.display = 'block';
+      } else {
+        document.getElementById('customAgentWrapper').style.display = 'none';
+      }
+    });
+
+    document.getElementById('callForm').addEventListener('submit', e => {
+      e.preventDefault();
+      const logs = loadData();
+      const agentSelect = document.getElementById('agentSelect');
+      let agentVal = "";
+      let isCustom = false;
+      if (agentSelect.value === "other") {
+        agentVal = document.getElementById('customAgent').value.trim();
+        isCustom = true;
+        if (!agentVal) {
+          alert('Please enter the custom agent name.');
+          return;
+        }
+      } else {
+        // agentSelect.value is the profile id.
+        if (!agentSelect.value) {
+          alert('Select an agent.');
+          return;
+        }
+        agentVal = agentSelect.value;
+      }
+      logs.push({
+        agent: agentVal, // if isCustom==false then this is a profile id; if true, it's a custom name
+        isCustom: isCustom,
+        date: document.getElementById('callDate').value,
+        duration: Number(document.getElementById('duration').value || 0),
+        note: document.getElementById('note').value.trim()
+      });
+      saveData(logs);
+      e.target.reset();
+      document.getElementById('customAgentWrapper').style.display = 'none';
+      render();
+    });
+
+    /* ===================== FILTER HELPER ===================== */
+    let currentFilter = { start: null, end: null };
+    function applyCurrentFilter(data) {
+      const filtered = data.filter(rec => {
+        const t = new Date(rec.date).getTime();
+        if (currentFilter.start && t < currentFilter.start) return false;
+        if (currentFilter.end && t > currentFilter.end) return false;
+        return true;
+      });
+      const agentFilterValue = document.getElementById('agentFilter').value;
+      if (agentFilterValue && agentFilterValue !== 'all') {
+        if (agentFilterValue === 'custom') {
+          return filtered.filter(r => r.isCustom === true);
+        } else {
+          return filtered.filter(r => !r.isCustom && r.agent === agentFilterValue);
+        }
+      }
+      return filtered;
+    }
+    document.getElementById('applyFilter').onclick = () => {
+      const s = document.getElementById('startDate').value;
+      const e = document.getElementById('endDate').value;
+      currentFilter.start = s ? new Date(s).setHours(0,0,0,0) : null;
+      currentFilter.end = e ? new Date(e).setHours(23,59,59,999) : null;
+      render();
+    };
+    document.getElementById('resetFilter').onclick = () => {
+      currentFilter = { start: null, end: null };
+      document.getElementById('startDate').value = '';
+      document.getElementById('endDate').value = '';
+      document.getElementById('agentFilter').value = 'all';
+      render();
+    };
+
+    /* ===================== CSV EXPORT ===================== */
+    document.getElementById('exportData').onclick = () => {
+      const data = applyCurrentFilter(loadData());
+      // CSV header now includes agent name and email
+      const csvLines = ['Agent Name,Agent Email,Date/Time,Duration,Note'];
+      data.forEach(r => {
+        let agentName = "";
+        let agentEmail = "";
+        if (!r.isCustom) {
+          // r.agent is a profile ID
+          const profiles = loadProfiles();
+          const profile = profiles.find(p => p.id === r.agent);
+          if (profile) {
+            agentName = profile.name;
+            agentEmail = profile.email;
+          } else {
+            agentName = r.agent;
+          }
+        } else {
+          agentName = r.agent;
+        }
+        // Wrap fields in quotes and escape quotes in note.
+        csvLines.push(`"${agentName}","${agentEmail}","${r.date}",${r.duration},"${r.note.replace(/"/g, '""')}"`);
+      });
+      const blob = new Blob([csvLines.join('\n')], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'call-log.csv';
+      a.click();
+      URL.revokeObjectURL(url);
+    };
+
+    /* ===================== CSV TEMPLATE DOWNLOAD ===================== */
+    document.getElementById('downloadTemplate').onclick = () => {
+      const headers = 'Agent Name,Agent Email,Date/Time,Duration,Note';
+      const blob = new Blob([headers], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'call-log-template.csv';
+      a.click();
+      URL.revokeObjectURL(url);
+    };
+
+    /* ===================== CSV IMPORT ===================== */
+    document.getElementById('importCSV').onclick = () => {
+      document.getElementById('csvFileInput').click();
+    };
+
+    // A very basic CSV parser that supports quoted fields.
+    function parseCSV(text) {
+      const rows = [];
+      let curRow = [];
+      let curValue = "";
+      let inQuotes = false;
+      for (let i = 0; i < text.length; i++) {
+        const char = text[i];
+        if (char === '"') {
+          // If the next char is also a quote, it's an escaped quote.
+          if (inQuotes && text[i+1] === '"') {
+            curValue += '"';
+            i++; // skip the next quote
+          } else {
+            inQuotes = !inQuotes;
+          }
+        } else if (char === ',' && !inQuotes) {
+          curRow.push(curValue);
+          curValue = "";
+        } else if ((char === "\n" || char === "\r") && !inQuotes) {
+          // End of line
+          if(char === "\r" && text[i+1] === "\n") { i++; } // handle CRLF
+          curRow.push(curValue);
+          rows.push(curRow);
+          curRow = [];
+          curValue = "";
+        } else {
+          curValue += char;
+        }
+      }
+      // Add last value if any.
+      if (curValue || curRow.length) {
+        curRow.push(curValue);
+        rows.push(curRow);
+      }
+      return rows;
+    }
+
+    document.getElementById('csvFileInput').addEventListener('change', e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function(evt) {
+        try {
+          const csvText = evt.target.result;
+          const rows = parseCSV(csvText);
+          if (!rows.length) { alert("CSV file is empty"); return; }
+          // Expecting header: Agent Name, Agent Email, Date/Time, Duration, Note
+          const [header, ...dataRows] = rows;
+          const logs = loadData();
+          const profiles = loadProfiles();
+          dataRows.forEach(row => {
+            if (row.length < 5) return;
+            const [agentName, agentEmail, callDate, duration, note] = row.map(s => s.trim());
+            let isCustom = true;
+            let agentVal = agentName;
+            // If agentEmail is provided, try to find an existing profile; if not, add a new profile.
+            if (agentEmail) {
+              let profile = profiles.find(p => p.email.toLowerCase() === agentEmail.toLowerCase());
+              if (!profile) {
+                // Create new profile
+                profile = { id: Date.now().toString() + Math.random().toString(16).slice(2), name: agentName, email: agentEmail };
+                profiles.push(profile);
+              }
+              agentVal = profile.id;
+              isCustom = false;
+            }
+            logs.push({
+              agent: agentVal,
+              isCustom: isCustom,
+              date: callDate,
+              duration: Number(duration),
+              note: note
+            });
+          });
+          saveData(logs);
+          saveProfiles(profiles);
+          render();
+          renderAgentProfiles();
+          renderAgentSelects();
+          alert("CSV import successful!");
+        } catch (err) {
+          alert("Error importing CSV: " + err.message);
+        }
+      };
+      reader.readAsText(file);
+      // Reset file input value
+      e.target.value = "";
+    });
+
+    /* ===================== JSON EXPORT / IMPORT ===================== */
+    document.getElementById('exportJSON').onclick = () => {
+      const data = {
+        callLogs: loadData(),
+        agentProfiles: loadProfiles()
+      };
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'call-backup.json';
+      a.click();
+      URL.revokeObjectURL(url);
+    };
+
+    document.getElementById('importJSON').onclick = () => {
+      document.getElementById('jsonFileInput').click();
+    };
+
+    document.getElementById('jsonFileInput').addEventListener('change', e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      if (!confirm("Importing JSON will override your current data. Continue?")) return;
+      const reader = new FileReader();
+      reader.onload = function(evt) {
+        try {
+          const data = JSON.parse(evt.target.result);
+          if (data.callLogs !== undefined && data.agentProfiles !== undefined) {
+            saveData(data.callLogs);
+            saveProfiles(data.agentProfiles);
+            render();
+            renderAgentProfiles();
+            renderAgentSelects();
+            alert("JSON import successful!");
+          } else {
+            alert("Invalid JSON format");
+          }
+        } catch (err) {
+          alert("Error importing JSON: " + err.message);
+        }
+      };
+      reader.readAsText(file);
+      e.target.value = "";
+    });
+
+    /* ===================== CHART & STATS ===================== */
+    // Determine ISO week number for weekly stats
+    function getISOWeek(date) {
+      const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+      d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
+      const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+      return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+    }
+    function computeStats(data) {
+      const totalCalls = data.length;
+      const totalDuration = data.reduce((s, r) => s + r.duration, 0);
+      const callsByAgent = {};
+      const daily = {}, weekly = {}, monthly = {};
+
+      data.forEach(r => {
+        // When displaying stats, show a friendly agent name
+        let name = "";
+        if (!r.isCustom) {
+          const profiles = loadProfiles();
+          const profile = profiles.find(p => p.id === r.agent);
+          name = profile ? profile.name : r.agent;
+        } else {
+          name = r.agent;
+        }
+        callsByAgent[name] = (callsByAgent[name] || 0) + 1;
+        const dObj = new Date(r.date);
+        const dayKey = r.date.slice(0,10);
+        daily[dayKey] = (daily[dayKey] || 0) + 1;
+        const weekKey = dObj.getFullYear() + '-W' + String(getISOWeek(dObj)).padStart(2, '0');
+        weekly[weekKey] = (weekly[weekKey] || 0) + 1;
+        const monKey = dObj.getFullYear() + '-' + String(dObj.getMonth() + 1).padStart(2, '0');
+        monthly[monKey] = (monthly[monKey] || 0) + 1;
+      });
+
+      const days = Object.keys(daily).length || 1;
+      const weeks = Object.keys(weekly).length || 1;
+      const months = Object.keys(monthly).length || 1;
+
+      return {
+        totalCalls,
+        totalDuration,
+        avgDur: totalCalls ? (totalDuration / totalCalls) : 0,
+        avgPerDay: totalCalls / days,
+        avgPerWeek: totalCalls / weeks,
+        avgPerMonth: totalCalls / months,
+        byAgent: callsByAgent,
+        daily
+      };
+    }
+
+    let chart; // Chart.js instance
+
+    function render() {
+      const raw = loadData();
+      const data = applyCurrentFilter(raw);
+
+      // ---- Render Call Log Table ----
+      const tbody = document.querySelector('#callTable tbody');
+      tbody.innerHTML = '';
+      data.forEach((r, i) => {
+        let agentDisplay = "";
+        if (!r.isCustom) {
+          const profiles = loadProfiles();
+          const profile = profiles.find(p => p.id === r.agent);
+          agentDisplay = profile ? profile.name : r.agent;
+        } else {
+          agentDisplay = r.agent;
+        }
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${i + 1}</td>
+          <td>${agentDisplay}</td>
+          <td>${new Date(r.date).toLocaleString()}</td>
+          <td>${r.duration}</td>
+          <td>${r.note || ''}</td>
+          <td class="center"><button onclick="deleteRow(${raw.indexOf(r)})" style="background:#dc3545">X</button></td>
+        `;
+        tbody.appendChild(tr);
+      });
+      document.getElementById('rowCount').textContent = data.length;
+
+      // ---- Render Stats ----
+      const s = computeStats(data);
+      const pane = document.getElementById('statsPane');
+      pane.innerHTML = `
+        <div class="stat"><h3>Total Calls</h3><p>${s.totalCalls}</p></div>
+        <div class="stat"><h3>Total Minutes</h3><p>${s.totalDuration.toFixed(0)}</p></div>
+        <div class="stat"><h3>Avg Duration</h3><p>${s.avgDur.toFixed(1)} min</p></div>
+        <div class="stat"><h3>Avg / Day</h3><p>${s.avgPerDay.toFixed(2)}</p></div>
+        <div class="stat"><h3>Avg / Week</h3><p>${s.avgPerWeek.toFixed(2)}</p></div>
+        <div class="stat"><h3>Avg / Month</h3><p>${s.avgPerMonth.toFixed(2)}</p></div>
+      `;
+      // Also list call totals by agent:
+      Object.entries(s.byAgent).forEach(([agent, count]) => {
+        const div = document.createElement('div');
+        div.className = 'stat';
+        div.innerHTML = `<h3>${agent}</h3><p>${count} calls</p>`;
+        pane.appendChild(div);
+      });
+
+      // ---- Render Chart (Daily Call Volume) ----
+      const ctx = document.getElementById('volumeChart').getContext('2d');
+      const labels = Object.keys(s.daily).sort();
+      const values = labels.map(k => s.daily[k]);
+      if (chart) chart.destroy();
+      chart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [{
+            label: 'Calls per Day',
+            data: values,
+            backgroundColor: labels.map(() => '#007bff')
+          }]
+        },
+        options: {
+          scales: { x: { ticks: { autoSkip: true, maxTicksLimit: 10 } }, y: { beginAtZero: true, precision: 0 } },
+          plugins: { legend: { display: false }, title: { display: true, text: 'Daily Call Volume' } }
+        }
+      });
+    }
+
+    // Delete call log entry.
+    function deleteRow(idx) {
+      if (!confirm('Delete this entry?')) return;
+      const logs = loadData();
+      logs.splice(idx, 1);
+      saveData(logs);
+      render();
+    }
+
+    /* ===================== INITIALIZATION ===================== */
+    // Set call date default to now.
+    document.getElementById('callDate').value = (()=>{
+      const d = new Date();
+      d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+      return d.toISOString().slice(0,16);
+    })();
+
+    // Render initial views.
+    renderAgentProfiles();
+    renderAgentSelects();
+    render();
+  </script>
+</body>
+</html>
